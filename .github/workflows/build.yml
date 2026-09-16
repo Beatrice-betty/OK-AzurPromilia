@@ -130,41 +130,66 @@ jobs:
           $py   = "$data/python/python.exe"
           $req  = "$data/working/requirements.txt"
 
-          Write-Host '===== 1. 路径检查 ====='
+          # pyappify 的 lib.rs 里 LoggerBuilder 配置为 .log_dir("logs") + .file_prefix("app")，
+          # 且 CLI 模式（-c setup）下 .stdout(!has_cli_command(...)) == false，stdout 被主动关掉。
+          # pip 的完整输出（emit_info!/emit_error! -> tracing）只落在这个日志文件里。
+          Write-Host '===== 1. 找 pyappify 的日志文件（关键）====='
+          $logs = @()
+          foreach ($c in @('logs', 'pyappify_dist/logs', "$app/logs", "$app/data/logs")) {
+            if (Test-Path $c) { $logs += Get-ChildItem $c -Filter '*.log' -File -ErrorAction SilentlyContinue }
+          }
+          if (-not $logs) {
+            $logs = Get-ChildItem . -Recurse -Depth 3 -Directory -Filter 'logs' -ErrorAction SilentlyContinue |
+              ForEach-Object { Get-ChildItem $_.FullName -Filter '*.log' -File -ErrorAction SilentlyContinue }
+          }
+          $logs = $logs | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+          if ($logs) {
+            foreach ($l in $logs) { Write-Host "  $($l.FullName)  ($($l.Length) bytes)" }
+          } else {
+            Write-Host '  (没找到日志文件)'
+          }
+
+          Write-Host '===== 2. 最新日志末尾 250 行 ====='
+          if ($logs) { Get-Content $logs[0].FullName -Tail 250 | Write-Host } else { Write-Host '  (跳过)' }
+
+          Write-Host '===== 3. 路径检查 ====='
           Write-Host "python.exe       : $(Test-Path $py)"
           Write-Host "requirements.txt : $(Test-Path $req)"
           Write-Host "working 目录     : $(Test-Path "$data/working")"
 
-          Write-Host '===== 2. 可能干扰的 Python/Pip 环境变量 ====='
+          Write-Host '===== 4. 可能干扰的 Python/Pip 环境变量 ====='
           Get-ChildItem Env: | Where-Object { $_.Name -match '^(PYTHON|PIP|VIRTUAL_ENV)' } |
             ForEach-Object { Write-Host "  $($_.Name)=$($_.Value)" }
 
-          Write-Host '===== 3. python / pip 版本 ====='
-          & $py --version
-          Write-Host "  python --version 退出码=$LASTEXITCODE"
-          & $py -m pip --version
-          Write-Host "  pip --version 退出码=$LASTEXITCODE"
-
-          Write-Host '===== 4. 复跑 pyappify 那条 pip 命令（关键证据）====='
-          if ((Test-Path $py) -and (Test-Path $req)) {
-            Push-Location "$data/working"
-            Write-Host "  CWD = $(Get-Location)"
-            & $py -m pip install --no-warn-script-location -r $req
-            Write-Host "  >>> pip 退出码 = $LASTEXITCODE"
-            Pop-Location
+          Write-Host '===== 5. python / pip 版本 ====='
+          if (Test-Path $py) {
+            & (Resolve-Path $py).Path --version
+            Write-Host "  python --version 退出码=$LASTEXITCODE"
+            & (Resolve-Path $py).Path -m pip --version
+            Write-Host "  pip --version 退出码=$LASTEXITCODE"
           } else {
-            Write-Host '  跳过：python.exe 或 requirements.txt 不存在'
+            Write-Host "  python.exe 不存在: $py"
           }
 
-          Write-Host '===== 5. pyappify 自己的配置 ====='
+          Write-Host '===== 6. pyappify 自己的配置 ====='
           foreach ($f in @("$app/data/config/app_config.json", "$data/app.json")) {
             Write-Host "--- $f"
             if (Test-Path $f) { Get-Content $f -Raw | Write-Host } else { Write-Host '(不存在)' }
           }
 
-          Write-Host '===== 6. working/ 顶层 ====='
-          if (Test-Path "$data/working") {
-            Get-ChildItem "$data/working" | Select-Object -First 40 -ExpandProperty Name | Write-Host
+          Write-Host '===== 7. 兜底：复跑 pip（带绝对路径）====='
+          if ((Test-Path $py) -and (Test-Path $req)) {
+            # ⚠️ 必须转绝对路径：Push-Location 之后相对路径会失效（上次就栽在这）
+            $pyAbs   = (Resolve-Path $py).Path
+            $reqAbs  = (Resolve-Path $req).Path
+            $workAbs = (Resolve-Path "$data/working").Path
+            Push-Location $workAbs
+            Write-Host "  CWD = $(Get-Location)"
+            & $pyAbs -m pip install --no-warn-script-location -r $reqAbs
+            Write-Host "  >>> pip 退出码 = $LASTEXITCODE"
+            Pop-Location
+          } else {
+            Write-Host '  跳过：python.exe 或 requirements.txt 不存在'
           }
 
       - name: Upload pyappify diagnostics
@@ -175,6 +200,9 @@ jobs:
           name: pyappify-diagnostics
           if-no-files-found: warn
           path: |
+            logs/**
+            pyappify_dist/logs/**
+            pyappify_dist/ok-ap/logs/**
             pyappify_dist/ok-ap/data/apps/ok-ap/**
             !pyappify_dist/ok-ap/data/apps/ok-ap/python/**
             !pyappify_dist/ok-ap/data/apps/ok-ap/working/.git/**
