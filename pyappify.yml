@@ -8,5 +8,8 @@ profiles:
     main_script: "main.py"
     requires_python: "3.12"
     requirements: "requirements.txt"
+    # requirements.txt 是 uv.lock 的完整闭包（含全部传递依赖），不需要 pip 再解析一遍依赖；
+    # ok-ww / ok-nte 两个同框架的生产项目也都用 --no-deps。
+    pip_args: "--no-deps"
     use_pythonw: true
     show_add_defender: true
