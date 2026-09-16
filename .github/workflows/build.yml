@@ -130,27 +130,34 @@ jobs:
           $py   = "$data/python/python.exe"
           $req  = "$data/working/requirements.txt"
 
-          # pyappify 的 lib.rs 里 LoggerBuilder 配置为 .log_dir("logs") + .file_prefix("app")，
-          # 且 CLI 模式（-c setup）下 .stdout(!has_cli_command(...)) == false，stdout 被主动关掉。
-          # pip 的完整输出（emit_info!/emit_error! -> tracing）只落在这个日志文件里。
-          Write-Host '===== 1. 找 pyappify 的日志文件（关键）====='
+          # pyappify 的 lib.rs：LoggerBuilder::new().log_dir("logs").file_prefix("app")
+          #   .stdout(!has_cli_command(...))    ← CLI 模式下 stdout 被主动关掉
+          # utils/logger.rs 用 tracing_appender::rolling::daily(dir, prefix)，
+          # 产出的文件名是 "app.<YYYY-MM-DD>"，**没有 .log 后缀**（之前用 *.log 找所以找不到）。
+          # pip 的完整输出（emit_info!/emit_error! -> tracing）只落在这个文件里。
+          Write-Host '===== 1. 找 pyappify 日志文件（关键）====='
           $logs = @()
           foreach ($c in @('logs', 'pyappify_dist/logs', "$app/logs", "$app/data/logs")) {
-            if (Test-Path $c) { $logs += Get-ChildItem $c -Filter '*.log' -File -ErrorAction SilentlyContinue }
+            if (Test-Path $c) { $logs += Get-ChildItem $c -File -Filter 'app*' -ErrorAction SilentlyContinue }
           }
           if (-not $logs) {
-            $logs = Get-ChildItem . -Recurse -Depth 3 -Directory -Filter 'logs' -ErrorAction SilentlyContinue |
-              ForEach-Object { Get-ChildItem $_.FullName -Filter '*.log' -File -ErrorAction SilentlyContinue }
+            $logs = Get-ChildItem . -Recurse -Depth 4 -File -Filter 'app*' -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notmatch '\\python\\' }
           }
-          $logs = $logs | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+          if (-not $logs) {
+            # 最后兜底：最近 60 分钟内被写过的文件
+            $logs = Get-ChildItem . -Recurse -Depth 4 -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notmatch '\\python\\' -and $_.LastWriteTime -gt (Get-Date).AddMinutes(-60) }
+          }
+          $logs = $logs | Sort-Object LastWriteTime -Descending | Select-Object -First 8
           if ($logs) {
             foreach ($l in $logs) { Write-Host "  $($l.FullName)  ($($l.Length) bytes)" }
           } else {
-            Write-Host '  (没找到日志文件)'
+            Write-Host '  (没找到任何日志文件)'
           }
 
-          Write-Host '===== 2. 最新日志末尾 250 行 ====='
-          if ($logs) { Get-Content $logs[0].FullName -Tail 250 | Write-Host } else { Write-Host '  (跳过)' }
+          Write-Host '===== 2. 最新日志末尾 300 行 ====='
+          if ($logs) { Get-Content $logs[0].FullName -Tail 300 | Write-Host } else { Write-Host '  (跳过)' }
 
           Write-Host '===== 3. 路径检查 ====='
           Write-Host "python.exe       : $(Test-Path $py)"
@@ -203,6 +210,7 @@ jobs:
             logs/**
             pyappify_dist/logs/**
             pyappify_dist/ok-ap/logs/**
+            pyappify_dist/ok-ap/ok-ap.exe
             pyappify_dist/ok-ap/data/apps/ok-ap/**
             !pyappify_dist/ok-ap/data/apps/ok-ap/python/**
             !pyappify_dist/ok-ap/data/apps/ok-ap/working/.git/**
