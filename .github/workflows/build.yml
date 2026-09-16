@@ -111,6 +111,69 @@ jobs:
         id: build-app
         uses: ok-oldking/pyappify-action@master
 
+      # 诊断用：PyAppify 通过 Tauri 事件通道输出 pip 日志，命令行模式下不落盘，
+      # 因此打包失败时看不到真正的报错。这里在失败后复跑同一套 pip 安装，把原始错误打印出来。
+      - name: Diagnose PyAppify setup failure
+        if: failure()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $app = 'pyappify_dist/ok-ap'
+          $data = "$app/data/apps/ok-ap"
+
+          Write-Host '=== 1. pyappify_dist 顶层 ==='
+          if (Test-Path 'pyappify_dist') { Get-ChildItem 'pyappify_dist' | Select-Object Name, Length }
+
+          Write-Host '=== 2. app 目录结构（前 60 项） ==='
+          if (Test-Path $app) { Get-ChildItem -Recurse -Depth 2 $app | Select-Object -First 60 FullName }
+
+          Write-Host '=== 3. data/apps/ok-ap 内容 ==='
+          if (Test-Path $data) { Get-ChildItem $data | Select-Object Name, Length }
+
+          Write-Host '=== 4. 配置文件与日志 ==='
+          $found = @()
+          if (Test-Path "$app/data") { $found += Get-ChildItem "$app/data" -File -Recurse -Depth 4 -Include *.json,*.log -ErrorAction SilentlyContinue }
+          if (Test-Path $data)       { $found += Get-ChildItem $data       -File -Recurse -Depth 4 -Include *.json,*.log -ErrorAction SilentlyContinue }
+          $found | Where-Object { $_.FullName -notmatch '\\\.git\\' } | Select-Object -Unique -First 20 | ForEach-Object {
+            Write-Host "--- $($_.FullName)"
+            try { Get-Content $_.FullName -Raw -ErrorAction Stop } catch { Write-Host "(读取失败: $_)" }
+          }
+
+          $py  = "$data/python/python.exe"
+          $req = "$data/working/requirements.txt"
+
+          Write-Host '=== 5. Python 与 pip ==='
+          if (Test-Path $py) {
+            & $py --version
+            & $py -m pip --version
+          } else {
+            Write-Host "python.exe 不存在: $py"
+          }
+
+          Write-Host '=== 6. 克隆结果（working 目录） ==='
+          if (Test-Path "$data/working") { Get-ChildItem "$data/working" | Select-Object Name }
+          Write-Host "requirements.txt 存在? $(Test-Path $req)"
+
+          Write-Host '=== 7. 复跑 pip install，捕获真实错误 ==='
+          if ((Test-Path $py) -and (Test-Path $req)) {
+            & $py -m pip install --no-warn-script-location -r $req
+            Write-Host "pip 退出码: $LASTEXITCODE"
+          }
+
+      - name: Upload pyappify diagnostics
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyappify-diagnostics
+          if-no-files-found: warn
+          path: |
+            pyappify_dist/ok-ap/data/apps/ok-ap/**
+            !pyappify_dist/ok-ap/data/apps/ok-ap/python/**
+            !pyappify_dist/ok-ap/data/apps/ok-ap/working/.git/**
+            !**/*.pyc
+
       - name: Add version to build filenames
         shell: pwsh
         run: |
